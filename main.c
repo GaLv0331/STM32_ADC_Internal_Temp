@@ -102,6 +102,10 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	  /*
+	  *	will change this from polling to DMA based not 
+	  */
+	  
 	  HAL_ADC_Start(&hadc1);
 	  HAL_ADC_PollForConversion(&hadc1, 1000);
 	  adc_sense[0] = HAL_ADC_GetValue(&hadc1);
