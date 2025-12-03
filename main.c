@@ -21,7 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "string.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -31,10 +31,10 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define V_REF_INT 1.24 //internal reference voltage refer data sheet section 6.3.24
-#define ADC_MAX 4095 //12-bit ADC
-#define V_25 0.76 //refer data sheet section 6.3.22
-#define AVG_SLOPE 0.0025 //refer data sheet section 6.3.22
+#define V_REF_INT 1.21 //internal reference voltage
+#define ADC_MAX 4095 //12bit adc
+#define AVG_SLOPE 0.0025 //from data sheet
+#define V_25 0.76// from data sheet
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -44,19 +44,26 @@
 
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
+DMA_HandleTypeDef hdma_adc1;
+
+TIM_HandleTypeDef htim3;
 
 /* USER CODE BEGIN PV */
-uint8_t temp_conv_flag=0;
 uint16_t adc_sense[2];
-double V_ref_int, V_sense, Temp_Act;
+uint32_t temp_raw = 0, V_ref_int_raw=0, V_ref_int_avg, temp_avg;
+uint32_t adc_conv_flag=0, data_flag=1;
+double V_sense, temp, V_ref_int;
+uint32_t temp_count=0, v_ref_int_count=0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_ADC1_Init(void);
+static void MX_TIM3_Init(void);
 /* USER CODE BEGIN PFP */
-
+void data_collect(uint16_t adc_sense[]);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -93,32 +100,31 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_ADC1_Init();
+  MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
-
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc_sense, 2);
+  HAL_TIM_Base_Start(&htim3);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  /*
-	  *	will change this from polling to DMA based not 
-	  */
-	  
-	  HAL_ADC_Start(&hadc1);
-	  HAL_ADC_PollForConversion(&hadc1, 1000);
-	  adc_sense[0] = HAL_ADC_GetValue(&hadc1);
-	  HAL_ADC_Start(&hadc1);
- 	  HAL_ADC_PollForConversion(&hadc1, 1000);
-	  adc_sense[1] = HAL_ADC_GetValue(&hadc1);
-	  HAL_Delay(1000);
-	  HAL_ADC_Stop(&hadc1);
-
-	  if(temp_conv_flag){
-		 temp_conv_flag = 0;
-
+	  while(data_flag){
+		  data_collect(adc_sense);
 	  }
+	  if(adc_conv_flag){
+		  V_ref_int = (V_REF_INT*ADC_MAX)/V_ref_int_avg;
+		  V_sense = (V_ref_int*temp_avg)/ADC_MAX;
+		  temp = ((V_sense - V_25)/AVG_SLOPE)+25;
+		  HAL_Delay(3000);
+		  adc_conv_flag = 0;
+	  }
+	  data_flag=1;
+	  //adc_sense = HAL_ADC_GetValue(&hadc1);
+	  //temp_cal(adc_sense);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -191,13 +197,13 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV8;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
   hadc1.Init.ScanConvMode = ENABLE;
-  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.ContinuousConvMode = ENABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
-  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
-  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISING;
+  hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIGCONV_T3_TRGO;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc1.Init.NbrOfConversion = 2;
-  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.DMAContinuousRequests = ENABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
   {
@@ -206,7 +212,7 @@ static void MX_ADC1_Init(void)
 
   /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
   */
-  sConfig.Channel = ADC_CHANNEL_TEMPSENSOR;
+  sConfig.Channel = ADC_CHANNEL_VREFINT;
   sConfig.Rank = 1;
   sConfig.SamplingTime = ADC_SAMPLETIME_480CYCLES;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
@@ -216,7 +222,7 @@ static void MX_ADC1_Init(void)
 
   /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
   */
-  sConfig.Channel = ADC_CHANNEL_VREFINT;
+  sConfig.Channel = ADC_CHANNEL_TEMPSENSOR;
   sConfig.Rank = 2;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
@@ -225,6 +231,67 @@ static void MX_ADC1_Init(void)
   /* USER CODE BEGIN ADC1_Init 2 */
 
   /* USER CODE END ADC1_Init 2 */
+
+}
+
+/**
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM3_Init(void)
+{
+
+  /* USER CODE BEGIN TIM3_Init 0 */
+
+  /* USER CODE END TIM3_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM3_Init 1 */
+
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 16000;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 10000;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM3_Init 2 */
+
+  /* USER CODE END TIM3_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA2_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA2_Stream0_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
 
 }
 
@@ -246,9 +313,41 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+/*void temp_cal(uint32_t adc_sense){
+	//uint32_t adc_max = 4095;
+	//uint32_t Vdd = 3.3;
+	//uint32_t V_25 = 0.76;
+	//uint32_t temp_avg_slope = 0.0025;
+	V_sense = (adc_sense/4095)*3.3;
+	temp = ((V_sense - 0.76)/0.0025) + 25;
+}*/
+void data_collect(uint16_t adc_sense[]){
+	if(adc_sense[1]==0 || adc_sense[0]==0){
+		return;
+	}
+	else{
+		V_ref_int_raw += adc_sense[0];
+		v_ref_int_count++;
+		HAL_Delay(1000);
+		temp_raw += adc_sense[1];
+		temp_count++;
+		HAL_Delay(1000);
+	}
+	if(temp_count==10 && v_ref_int_count==10){
+		data_flag=0;
+		V_ref_int_avg = (V_ref_int_raw/v_ref_int_count);
+		temp_avg = (temp_raw/temp_count);
+		V_ref_int_raw = 0;
+		temp_raw = 0;
+		bzero(&temp_raw, 1);
+		bzero(&V_ref_int_raw, 1);
+		bzero(&temp_count, 1);
+		bzero(&v_ref_int_count, 1);
+	}
+}
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc){
-	if(hadc->Instance == ADC1){
-		temp_conv_flag = 1;
+	if(hadc->Instance==ADC1){
+		adc_conv_flag = 1;
 	}
 }
 /* USER CODE END 4 */
